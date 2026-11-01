@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod matcher;
 pub mod merchant_service;
 pub mod outbound;

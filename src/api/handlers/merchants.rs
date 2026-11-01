@@ -82,6 +82,17 @@ pub async fn create_merchant_handler(
         )
         .await?;
 
+    let _ = crate::services::audit::AuditLogger::log(
+        &state.db,
+        &crate::auth::Principal::Master,
+        "merchant.create",
+        "merchant",
+        &res.merchant.id,
+        Some(&res.merchant.id),
+        None,
+    )
+    .await;
+
     Ok((StatusCode::CREATED, Json(res)))
 }
 
@@ -111,4 +122,80 @@ pub async fn get_merchant_handler(
     let service = MerchantService::new(&state.db, &state.config.data_encryption_key);
     let merchant = service.get_merchant(&id).await?;
     Ok(Json(merchant))
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestWebhookResponse {
+    pub delivery_id: String,
+    pub merchant_id: String,
+    pub event_type: &'static str,
+    pub url: String,
+    pub status: &'static str,
+}
+
+/// POST /api/v1/merchants/{id}/test-webhook (Master only)
+pub async fn test_webhook_handler(
+    State(state): State<AppState>,
+    _master: RequireMaster,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let service = MerchantService::new(&state.db, &state.config.data_encryption_key);
+    let merchant = service.get_merchant(&id).await?;
+
+    let callback_url = merchant.callback_url.ok_or_else(|| {
+        AppError::ValidationError("Merchant belum memiliki callback_url.".to_string())
+    })?;
+
+    let delivery_id = format!("dlv_{}", ulid::Ulid::new());
+    let now = chrono::Utc::now().timestamp_millis();
+    let payload = serde_json::json!({
+        "event": "merchant.test",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "data": {
+            "merchant_id": merchant.id,
+            "merchant_name": merchant.merchant_name,
+            "message": "Uji coba webhook merchant berhasil dikirim."
+        }
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO webhook_deliveries (
+            id, merchant_id, transaction_id, event_type, url, payload_json,
+            status, attempts, next_attempt_at, created_at
+        )
+        VALUES (?, ?, NULL, 'merchant.test', ?, ?, 'PENDING', 0, ?, ?)
+        "#,
+    )
+    .bind(&delivery_id)
+    .bind(&merchant.id)
+    .bind(&callback_url)
+    .bind(payload.to_string())
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let _ = crate::services::audit::AuditLogger::log(
+        &state.db,
+        &crate::auth::Principal::Master,
+        "merchant.test_webhook",
+        "delivery",
+        &delivery_id,
+        Some(&merchant.id),
+        None,
+    )
+    .await;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(TestWebhookResponse {
+            delivery_id,
+            merchant_id: merchant.id,
+            event_type: "merchant.test",
+            url: callback_url,
+            status: "PENDING",
+        }),
+    ))
 }

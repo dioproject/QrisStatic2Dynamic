@@ -80,6 +80,17 @@ pub async fn create_source_handler(
         state.config.app_base_url, source_id
     );
 
+    let _ = crate::services::audit::AuditLogger::log(
+        &state.db,
+        &crate::auth::Principal::Master,
+        "merchant.source.create",
+        "source",
+        &source_id,
+        Some(&merchant_id),
+        None,
+    )
+    .await;
+
     Ok((
         StatusCode::CREATED,
         Json(CreateSourceResponse {

@@ -50,6 +50,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::merchants::get_merchant_handler),
         )
         .route(
+            "/api/v1/merchants/{id}/test-webhook",
+            post(handlers::merchants::test_webhook_handler),
+        )
+        .route(
             "/api/v1/merchants/{id}/sources",
             post(handlers::sources::create_source_handler),
         )
@@ -81,6 +85,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/transactions/{id}/cancel",
             post(handlers::transactions::cancel_transaction_handler),
+        )
+        .route(
+            "/api/v1/transactions/{id}/mark-paid",
+            post(handlers::transactions::mark_paid_handler),
         )
         // Inbound Webhooks Mutasi (HMAC source secret)
         .route(

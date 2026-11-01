@@ -11,7 +11,7 @@ use axum::{
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     Master,
     Merchant { merchant_id: String, key_id: String },

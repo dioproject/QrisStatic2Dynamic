@@ -338,4 +338,103 @@ impl<'a> TransactionService<'a> {
 
         self.get_transaction(id).await
     }
+
+    /// Menandai transaksi lunas secara manual oleh admin master (TX-06, TX-07, MT-12).
+    /// Boleh dari PENDING, EXPIRED, CANCELED, AMBIGUOUS.
+    /// Dilarang dari PAID (409 TXN_ALREADY_PAID).
+    /// Alasan wajib 3–200 karakter.
+    pub async fn mark_paid(&self, id: &str, reason: &str) -> Result<Transaction, AppError> {
+        let reason_trimmed = reason.trim();
+        let len = reason_trimmed.chars().count();
+        if !(3..=200).contains(&len) {
+            return Err(AppError::ValidationError(
+                "Alasan mark-paid wajib berukuran 3 hingga 200 karakter.".to_string(),
+            ));
+        }
+
+        let txn = self.get_transaction(id).await?;
+        if txn.status == "PAID" {
+            return Err(AppError::TxnAlreadyPaid);
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        let rows = sqlx::query(
+            r#"
+            UPDATE transactions
+            SET status = 'PAID',
+                paid_at = ?,
+                payment_source = 'MANUAL',
+                updated_at = ?
+            WHERE id = ? AND status != 'PAID'
+            "#,
+        )
+        .bind(now)
+        .bind(now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .rows_affected();
+
+        if rows == 0 {
+            return Err(AppError::TxnAlreadyPaid);
+        }
+
+        // Simpan outbound webhook event jika merchant memiliki callback_url
+        let merchant_cb: Option<String> =
+            sqlx::query_scalar("SELECT callback_url FROM merchants WHERE id = ?")
+                .bind(&txn.merchant_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .flatten();
+
+        if let Some(cb_url) = merchant_cb {
+            let delivery_id = format!("dlv_{}", ulid::Ulid::new());
+            let payload = serde_json::json!({
+                "event": "transaction.paid",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "data": {
+                    "id": txn.id,
+                    "merchant_id": txn.merchant_id,
+                    "merchant_ref": txn.merchant_ref,
+                    "amount": txn.final_amount,
+                    "status": "PAID",
+                    "payment_source": "MANUAL",
+                    "paid_at": chrono::Utc::now().to_rfc3339(),
+                    "reason": reason_trimmed,
+                }
+            });
+
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO webhook_deliveries (
+                    id, merchant_id, event_type, url, payload_json,
+                    status, attempts, next_attempt_at, created_at
+                )
+                VALUES (?, ?, 'transaction.paid', ?, ?, 'PENDING', 0, ?, ?)
+                "#,
+            )
+            .bind(delivery_id)
+            .bind(&txn.merchant_id)
+            .bind(cb_url)
+            .bind(payload.to_string())
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        self.get_transaction(id).await
+    }
 }

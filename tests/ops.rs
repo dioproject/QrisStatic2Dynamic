@@ -3,6 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
+use qris_api::db::{backup, connect_file};
 use qris_api::services::sweeper::SweeperWorker;
 use qris_api::{AppConfig, AppState, build_router, db::init_db};
 use tower::ServiceExt;
@@ -477,6 +478,259 @@ async fn test_qris_parse_rejects_oversized_json_and_bad_content_type() {
         .await
         .unwrap();
     assert_eq!(res2.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn test_test_webhook_flow() {
+    let (app, state, _dir) = setup(1000, 1000, vec![]).await;
+
+    // Buat merchant dengan callback_url
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/merchants")
+                .header(header::AUTHORIZATION, format!("Bearer {MASTER_KEY}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "Webhook Test Merchant",
+                        "static_payload": SYNTHETIC_STATIC,
+                        "callback_url": "https://webhook.example.com/callback"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let val: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let merchant_id = val["merchant"]["id"].as_str().unwrap().to_string();
+
+    // Trigger test-webhook
+    let res_test = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/merchants/{merchant_id}/test-webhook"))
+                .header(header::AUTHORIZATION, format!("Bearer {MASTER_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_test.status(), StatusCode::ACCEPTED);
+    let dlv_res: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res_test.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(dlv_res["event_type"], "merchant.test");
+    assert_eq!(dlv_res["status"], "PENDING");
+
+    // Pastikan masuk ke tabel webhook_deliveries
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM webhook_deliveries WHERE merchant_id = ? AND event_type = 'merchant.test'"
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn test_mark_paid_flow_and_audit() {
+    let (app, state, _dir) = setup(1000, 1000, vec![]).await;
+
+    // Buat merchant
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/merchants")
+                .header(header::AUTHORIZATION, format!("Bearer {MASTER_KEY}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "Audit Test Merchant",
+                        "static_payload": SYNTHETIC_STATIC
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let val: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let merchant_id = val["merchant"]["id"].as_str().unwrap().to_string();
+    let key = val["credentials"]["api_key"].as_str().unwrap().to_string();
+
+    // Buat transaksi
+    let res_txn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/merchants/{merchant_id}/transactions"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"base_amount":25000}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_txn.status(), StatusCode::CREATED);
+    let txn: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res_txn.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let txn_id = txn["id"].as_str().unwrap().to_string();
+
+    // 1. Mark paid gagal bila bukan master
+    let res_forbidden = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/transactions/{txn_id}/mark-paid"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"reason":"Verifikasi manual"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_forbidden.status(), StatusCode::FORBIDDEN);
+
+    // 2. Mark paid gagal jika alasan < 3 karakter
+    let res_bad_reason = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/transactions/{txn_id}/mark-paid"))
+                .header(header::AUTHORIZATION, format!("Bearer {MASTER_KEY}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"reason":"ok"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_bad_reason.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 3. Mark paid sukses dengan alasan valid oleh master
+    let res_success = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/transactions/{txn_id}/mark-paid"))
+                .header(header::AUTHORIZATION, format!("Bearer {MASTER_KEY}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"reason":"Bukti transfer mutasi rekening bank valid"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_success.status(), StatusCode::OK);
+    let paid_txn: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res_success.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paid_txn["status"], "PAID");
+    assert_eq!(paid_txn["payment_source"], "MANUAL");
+
+    // 4. Mark paid ulang harus 409 TXN_ALREADY_PAID (TX-07)
+    let res_dup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/transactions/{txn_id}/mark-paid"))
+                .header(header::AUTHORIZATION, format!("Bearer {MASTER_KEY}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"reason":"Coba mark ulang"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_dup.status(), StatusCode::CONFLICT);
+
+    // 5. Verifikasi pencatatan audit log
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'transaction.mark_paid' AND resource_id = ?"
+    )
+    .bind(&txn_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 1, "audit log mark-paid harus tersimpan");
+}
+
+#[tokio::test]
+async fn test_backup_is_consistent_and_never_overwrites() {
+    let (_app, state, dir) = setup(1000, 1000, vec![]).await;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    sqlx::query(
+        r#"INSERT INTO merchants (id, name, static_payload, static_payload_sha256,
+           merchant_name, merchant_city, mcc, created_at, updated_at)
+           VALUES ('mch_backup','B','P','h','B','J','5812',?,?)"#,
+    )
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let out = dir.path().join("backup").join("qris-backup.db");
+    backup::backup_database(&state.config.database_url, &out)
+        .await
+        .expect("backup harus berhasil");
+    assert!(out.exists(), "file backup harus dibuat");
+
+    // Isi backup harus memuat data yang sama.
+    let pool = connect_file(&out, true).await.expect("buka backup");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM merchants")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    assert_eq!(count, 1);
+
+    let integrity = backup::integrity_check_file(&out)
+        .await
+        .expect("integrity check backup");
+    assert_eq!(integrity, "ok");
+
+    // Backup tidak boleh menimpa file yang sudah ada.
+    let err = backup::backup_database(&state.config.database_url, &out)
+        .await
+        .expect_err("backup kedua harus ditolak");
+    assert!(err.contains("sudah ada"), "pesan error: {err}");
 }
 
 #[tokio::test]

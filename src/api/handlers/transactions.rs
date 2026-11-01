@@ -39,6 +39,11 @@ pub struct CancelTransactionPayload {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MarkPaidPayload {
+    pub reason: String,
+}
+
 /// POST /api/v1/merchants/{id}/transactions
 pub async fn create_transaction_handler(
     State(state): State<AppState>,
@@ -79,6 +84,17 @@ pub async fn create_transaction_handler(
 
     let service = TransactionService::new(&state.db);
     let txn = service.create_transaction(&merchant_id, params).await?;
+
+    let _ = crate::services::audit::AuditLogger::log(
+        &state.db,
+        &principal,
+        "transaction.create",
+        "transaction",
+        &txn.id,
+        Some(&merchant_id),
+        None,
+    )
+    .await;
 
     Ok((StatusCode::CREATED, Json(txn)))
 }
@@ -205,6 +221,45 @@ pub async fn cancel_transaction_handler(
     let updated = service
         .cancel_transaction(&id, &txn.merchant_id, payload.reason)
         .await?;
+
+    let _ = crate::services::audit::AuditLogger::log(
+        &state.db,
+        &principal,
+        "transaction.cancel",
+        "transaction",
+        &id,
+        Some(&txn.merchant_id),
+        None,
+    )
+    .await;
+
+    Ok(Json(updated))
+}
+
+/// POST /api/v1/transactions/{id}/mark-paid (Admin Master Only)
+pub async fn mark_paid_handler(
+    State(state): State<AppState>,
+    RequireAuth(principal): RequireAuth,
+    Path(id): Path<String>,
+    Json(payload): Json<MarkPaidPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if principal != Principal::Master {
+        return Err(AppError::AuthForbidden);
+    }
+
+    let service = TransactionService::new(&state.db);
+    let updated = service.mark_paid(&id, &payload.reason).await?;
+
+    let _ = crate::services::audit::AuditLogger::log(
+        &state.db,
+        &principal,
+        "transaction.mark_paid",
+        "transaction",
+        &id,
+        Some(&updated.merchant_id),
+        Some(serde_json::json!({ "reason": payload.reason })),
+    )
+    .await;
 
     Ok(Json(updated))
 }

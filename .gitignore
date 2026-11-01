@@ -1,0 +1,34 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Database
+/data/
+*.db
+*.db-shm
+*.db-wal
+/backup/
+
+# Local real fixtures (SANGAT PENTING: jangan commit ke repo publik!)
+/Qris Static.jpeg
+/Qris Static 2.jpeg
+*.jpeg
+*.jpg
+*.png
+!tests/fixtures/*.png
+!tests/fixtures/*.jpg
+!tests/fixtures/*.jpeg
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

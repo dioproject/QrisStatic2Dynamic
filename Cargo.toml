@@ -1,0 +1,50 @@
+[package]
+name = "qris-api"
+version = "0.1.0"
+edition = "2024"
+authors = ["Galang"]
+description = "REST API Rust + Axum untuk konversi QRIS statis ke dinamis secara merchant-safe"
+
+[dependencies]
+# Web framework
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "set-header"] }
+multer = "3.1"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+
+# Logging & Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Cryptography & Security
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2.6"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+ulid = "1.2"
+
+# QR Code Engine
+rqrr = "0.9"
+qrcode = { version = "0.14", default-features = false, features = ["svg", "image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+# Database (for M2 onward, included early)
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "tls-rustls", "migrate", "macros", "derive", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.11"
+
+[dev-dependencies]
+proptest = "1.6"
+tempfile = "3.17"
+tokio-test = "0.4"

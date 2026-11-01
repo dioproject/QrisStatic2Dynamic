@@ -28,6 +28,17 @@ pub fn decode_qr_from_image_bytes(bytes: &[u8]) -> Result<String, AppError> {
         return Err(AppError::QrisImageDimensionsExceeded);
     }
 
+    // RL-09: tolak rasio ekstrem (mis. banner panjang) yang bukan QR wajar.
+    let (w, h) = (width.max(1), height.max(1));
+    if w.max(h) > w.min(h).saturating_mul(10) {
+        return Err(AppError::QrisImageDimensionsExceeded);
+    }
+
+    // RL-09: tolak gambar multi-frame (WebP animasi).
+    if is_webp && webp_is_animated(bytes) {
+        return Err(AppError::QrisImageUnsupported);
+    }
+
     // Konversi ke luma8 untuk rqrr
     let luma = img.to_luma8();
     let mut prepared = PreparedImage::prepare(luma);
@@ -62,6 +73,36 @@ pub fn decode_qr_from_image_bytes(bytes: &[u8]) -> Result<String, AppError> {
     Ok(first.clone())
 }
 
+/// Mendeteksi WebP animasi dengan menelusuri chunk RIFF (RL-09).
+///
+/// WebP animasi memuat chunk `ANIM`; gambar statis tidak. Dekoder `image`
+/// hanya mengambil frame pertama, sehingga tanpa cek ini animasi akan lolos.
+fn webp_is_animated(bytes: &[u8]) -> bool {
+    let mut pos = 12usize; // melewati "RIFF", size, "WEBP"
+
+    while pos + 8 <= bytes.len() {
+        let fourcc = &bytes[pos..pos + 4];
+        let size = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]) as usize;
+
+        if fourcc == b"ANIM" {
+            return true;
+        }
+
+        let padded = size + (size & 1);
+        pos = match pos.checked_add(8).and_then(|p| p.checked_add(padded)) {
+            Some(next) => next,
+            None => return false,
+        };
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +114,25 @@ mod tests {
             decode_qr_from_image_bytes(fake),
             Err(AppError::QrisImageUnsupported)
         ));
+    }
+
+    #[test]
+    fn test_detect_animated_webp() {
+        // RIFF + size + WEBP + chunk ANIM.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&20u32.to_le_bytes());
+        buf.extend_from_slice(b"WEBP");
+        buf.extend_from_slice(b"ANIM");
+        buf.extend_from_slice(&4u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        assert!(webp_is_animated(&buf));
+
+        // Tanpa chunk ANIM.
+        let mut still = Vec::new();
+        still.extend_from_slice(b"RIFF");
+        still.extend_from_slice(&12u32.to_le_bytes());
+        still.extend_from_slice(b"WEBP");
+        assert!(!webp_is_animated(&still));
     }
 }

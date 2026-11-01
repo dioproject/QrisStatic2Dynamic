@@ -32,6 +32,11 @@ async fn setup_app() -> (axum::Router, tempfile::TempDir) {
         require_signed_requests: false,
         allow_public_stateless: false,
         allow_insecure_callbacks: false,
+        rate_limit_per_minute: 1000,
+        rate_limit_burst: 1000,
+        rate_limit_image_per_minute: 1000,
+        cors_allowed_origins: vec![],
+        trust_proxy_headers: false,
     };
 
     let state = AppState::new(config, pool);

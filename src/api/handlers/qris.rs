@@ -1,10 +1,16 @@
 use crate::domain::amount::{FeeConfig, Rupiah, UniqueCodeConfig, calculate_final_amount};
-use crate::domain::image::decode_qr_from_image_bytes;
+use crate::domain::image::{MAX_IMAGE_BYTES, decode_qr_from_image_bytes};
 use crate::domain::qris::{parse_qris, transform_to_dynamic};
 use crate::domain::render::{EccLevel, render_qr_png_base64, render_qr_svg};
 use crate::error::AppError;
 use axum::{Json, body::Bytes, extract::State, http::HeaderMap, response::IntoResponse};
 use serde::{Deserialize, Serialize};
+
+/// Batas body JSON (RULES §9 RL-05).
+const MAX_JSON_BODY: usize = 256 * 1024;
+/// Batas waktu decode gambar (RL-10). Task blocking tidak dapat dibatalkan,
+/// tetapi klien tidak boleh menunggu tanpa batas.
+const IMAGE_DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Deserialize)]
 pub struct ParseRequest {
@@ -25,8 +31,13 @@ pub async fn parse_handler(
 
     // 1. Tangani JSON
     if content_type.starts_with("application/json") {
+        // RL-05/RL-06: batas 256 KB untuk body JSON.
+        if body_bytes.len() > MAX_JSON_BODY {
+            return Err(AppError::PayloadTooLarge);
+        }
+
         let req: ParseRequest = serde_json::from_slice(&body_bytes)
-            .map_err(|e| AppError::Internal(format!("JSON request tidak valid: {}", e)))?;
+            .map_err(|_| AppError::ValidationError("Body JSON tidak valid.".to_string()))?;
         if let Some(payload) = req.payload {
             let res = parse_qris(&payload, req.include_tlv)?;
             return Ok(Json(res));
@@ -37,7 +48,7 @@ pub async fn parse_handler(
     // 2. Tangani Multipart (Upload Gambar)
     if content_type.starts_with("multipart/form-data") {
         let boundary =
-            multer::parse_boundary(content_type).map_err(|_| AppError::QrisImageUnsupported)?;
+            multer::parse_boundary(content_type).map_err(|_| AppError::UnsupportedMediaType)?;
         let mut multipart = multer::Multipart::new(
             futures_util::stream::once(async move { Ok::<_, std::io::Error>(body_bytes) }),
             boundary,
@@ -49,16 +60,20 @@ pub async fn parse_handler(
         while let Some(mut field) = multipart
             .next_field()
             .await
-            .map_err(|e| AppError::Internal(e.to_string()))?
+            .map_err(|_| AppError::ValidationError("Multipart tidak valid.".to_string()))?
         {
             let name = field.name().unwrap_or_default().to_string();
             if name == "image" || name == "file" {
+                // RL-06: hentikan akumulasi begitu melewati batas, jangan tunggu selesai.
                 let mut data = Vec::new();
                 while let Some(chunk) = field
                     .chunk()
                     .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?
+                    .map_err(|_| AppError::ValidationError("Field gambar rusak.".to_string()))?
                 {
+                    if data.len() + chunk.len() > MAX_IMAGE_BYTES {
+                        return Err(AppError::QrisImageTooLarge);
+                    }
                     data.extend_from_slice(&chunk);
                 }
                 image_bytes = Some(data);
@@ -69,16 +84,24 @@ pub async fn parse_handler(
         }
 
         if let Some(bytes) = image_bytes {
-            let payload = tokio::task::spawn_blocking(move || decode_qr_from_image_bytes(&bytes))
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))??;
+            // RL-10: decode di spawn_blocking + timeout, jangan blokir runtime.
+            let payload = tokio::time::timeout(
+                IMAGE_DECODE_TIMEOUT,
+                tokio::task::spawn_blocking(move || decode_qr_from_image_bytes(&bytes)),
+            )
+            .await
+            .map_err(|_| AppError::QrisImageDecodeFailed)?
+            .map_err(|e| AppError::Internal(e.to_string()))??;
 
             let res = parse_qris(&payload, include_tlv)?;
             return Ok(Json(res));
         }
+
+        // Multipart valid tapi tanpa field gambar.
+        return Err(AppError::QrisEmpty);
     }
 
-    Err(AppError::QrisEmpty)
+    Err(AppError::UnsupportedMediaType)
 }
 
 #[derive(Debug, Deserialize)]

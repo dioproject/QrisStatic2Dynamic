@@ -190,6 +190,12 @@ pub enum AppError {
 
     #[error("Ukuran body request melebihi batas yang diizinkan.")]
     PayloadTooLarge,
+
+    #[error("Content-Type tidak didukung untuk endpoint ini.")]
+    UnsupportedMediaType,
+
+    #[error("Request tidak valid: {0}")]
+    ValidationError(String),
 }
 
 impl AppError {
@@ -249,6 +255,8 @@ impl AppError {
             Self::WebhookEventIdInvalid => "WEBHOOK_EVENT_ID_INVALID",
             Self::WebhookBodyInvalid => "WEBHOOK_BODY_INVALID",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            Self::UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
+            Self::ValidationError(_) => "VALIDATION_ERROR",
         }
     }
 
@@ -257,6 +265,7 @@ impl AppError {
             Self::QrisImageTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::QrisImageUnsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::TxnAmountCollision
             | Self::UniqueCodePoolExhausted
             | Self::UniqueCodeUnavailable

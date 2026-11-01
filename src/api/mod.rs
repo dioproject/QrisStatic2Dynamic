@@ -120,6 +120,9 @@ pub fn build_router(state: AppState) -> Router {
         .layer(cors)
         // Batas body default untuk semua route (RL-05).
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        // Request ID + log terstruktur (OP-08); paling luar agar semua
+        // respons (termasuk 4xx/5xx) memuat header dan tercatat.
+        .layer(axum_middleware::from_fn(middleware::request_id::request_id))
         .with_state(state)
 }
 

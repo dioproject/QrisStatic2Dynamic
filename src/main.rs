@@ -1,12 +1,12 @@
 use qris_api::db::init_db;
 use qris_api::services::outbound::OutboundWorker;
 use qris_api::services::sweeper::SweeperWorker;
-use qris_api::{AppConfig, AppState, build_router};
+use qris_api::{AppConfig, AppState, build_router, telemetry};
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    telemetry::init();
 
     let config = AppConfig::load_from_env()?;
     let bind_addr = config.app_bind.clone();

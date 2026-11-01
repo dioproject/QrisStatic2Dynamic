@@ -323,7 +323,7 @@ impl IntoResponse for AppError {
                 code: self.code().to_string(),
                 message: self.to_string(),
                 details: self.details(),
-                request_id: None,
+                request_id: crate::telemetry::current_request_id(),
             },
         };
         (status, Json(body)).into_response()

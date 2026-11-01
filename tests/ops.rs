@@ -55,6 +55,97 @@ fn with_client_ip(mut req: Request<Body>, ip: [u8; 4]) -> Request<Body> {
 }
 
 #[tokio::test]
+async fn test_request_id_header_and_error_envelope() {
+    let (app, _state, _dir) = setup(1000, 1000, vec![]).await;
+
+    // 1. Respons sukses selalu memuat X-Request-Id.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let generated = res
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("X-Request-Id wajib ada")
+        .to_string();
+    assert!(generated.starts_with("req_"), "format ID: {generated}");
+
+    // 2. ID valid dari klien dipakai kembali untuk korelasi lintas layanan.
+    let res2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .header("x-request-id", "trace-abc-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res2.headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("trace-abc-123")
+    );
+
+    // 3. ID tidak aman diganti, bukan diteruskan mentah.
+    let res3 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .header("x-request-id", "bad id with spaces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        res3.headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("bad id with spaces")
+    );
+
+    // 4. Error envelope memuat request_id yang sama dengan header.
+    let res4 = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/merchants")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res4.status(), StatusCode::UNAUTHORIZED);
+    let header_id = res4
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("X-Request-Id pada error")
+        .to_string();
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res4.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["error"]["request_id"], header_id);
+}
+
+#[tokio::test]
 async fn test_security_headers_present() {
     let (app, _state, _dir) = setup(1000, 1000, vec![]).await;
 

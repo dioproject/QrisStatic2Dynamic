@@ -17,9 +17,13 @@
 # Local real fixtures (SANGAT PENTING: jangan commit ke repo publik!)
 /Qris Static.jpeg
 /Qris Static 2.jpeg
+/donasi.jpeg
 *.jpeg
 *.jpg
 *.png
+!assets/*.svg
+!assets/*.png
+!assets/*.jpg
 !tests/fixtures/*.png
 !tests/fixtures/*.jpg
 !tests/fixtures/*.jpeg

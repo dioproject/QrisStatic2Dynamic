@@ -1,8 +1,9 @@
 pub mod handlers;
+pub mod middleware;
 
 use crate::state::AppState;
 use axum::{
-    Router,
+    Router, middleware as axum_middleware,
     routing::{get, post},
 };
 
@@ -44,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::transactions::get_transaction_status_handler),
         )
         .route(
+            "/api/v1/transactions/{id}/stream",
+            get(handlers::stream::transaction_stream_handler),
+        )
+        .route(
             "/api/v1/transactions/{id}/qr.png",
             get(handlers::transactions::get_transaction_png_handler),
         )
@@ -60,5 +65,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/webhooks/mutation/{source_id}",
             post(handlers::webhooks::mutation_webhook_handler),
         )
+        // Signed request (HMAC + nonce anti-replay) untuk semua non-GET ber-auth.
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            middleware::signed::require_signed_request,
+        ))
         .with_state(state)
 }

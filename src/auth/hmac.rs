@@ -20,13 +20,14 @@ pub struct RequestSignatureParams<'a> {
 pub struct SignedRequestValidator;
 
 impl SignedRequestValidator {
-    /// Validasi HMAC signature + anti-replay nonce untuk request non-GET (RULES §8 SG-01 s/d SG-16)
+    /// Validasi HMAC signature + anti-replay nonce untuk request non-GET
+    /// (RULES §8 SG-01 s/d SG-16).
     pub async fn validate(
         state: &AppState,
         principal: &Principal,
         params: RequestSignatureParams<'_>,
     ) -> Result<(), AppError> {
-        // Jika mode strict tanda tangan non-aktif (hanya untuk dev), lewati
+        // Mode strict non-aktif (dev) → lewati.
         if !state.config.require_signed_requests {
             return Ok(());
         }
@@ -35,30 +36,29 @@ impl SignedRequestValidator {
         let nonce = params.nonce_str.ok_or(AppError::SignatureRequired)?;
         let signature = params.signature_str.ok_or(AppError::SignatureRequired)?;
 
-        if !(16..=64).contains(&nonce.len()) {
+        // SG-03: nonce 16-64 karakter ASCII.
+        if !(16..=64).contains(&nonce.len()) || !nonce.is_ascii() {
             return Err(AppError::SignatureInvalid);
         }
 
+        // SG-02: timestamp epoch detik, skew maksimal 300 detik.
         let req_ts: i64 = ts_str
             .parse()
             .map_err(|_| AppError::SignatureTimestampInvalid)?;
         let now_sec = chrono::Utc::now().timestamp();
-        let skew_limit = 300i64; // 300 detik
+        let skew_limit = 300i64;
 
         if (now_sec - req_ts).abs() > skew_limit {
             return Err(AppError::SignatureTimestampInvalid);
         }
 
-        // 1. Dapatkan credential_id dan signing secret
+        // SG-08: master memakai MASTER_API_KEY, merchant memakai signing secret ACTIVE.
         let (credential_id, secret) = match principal {
             Principal::Master => ("master".to_string(), state.config.master_api_key.clone()),
-            Principal::Merchant {
-                merchant_id,
-                key_id,
-            } => {
-                let row = sqlx::query_scalar::<_, String>(
+            Principal::Merchant { merchant_id, .. } => {
+                let row = sqlx::query_as::<_, (String, String)>(
                     r#"
-                    SELECT secret_enc FROM signing_secrets
+                    SELECT id, secret_enc FROM signing_secrets
                     WHERE merchant_id = ? AND status = 'ACTIVE'
                     "#,
                 )
@@ -70,36 +70,16 @@ impl SignedRequestValidator {
                     AppError::Internal("Signing secret aktif tidak ditemukan".to_string())
                 })?;
 
-                let aad = format!("signing_secrets:{}:{}", key_id, merchant_id);
-                // Fallback AAD jika secret_id berbeda
-                let sec = decrypt_secret(&row, &state.config.data_encryption_key, &aad)
-                    .or_else(|_| decrypt_secret(&row, &state.config.data_encryption_key, ""))
+                // AAD WAJIB sama persis dengan saat enkripsi (merchant_service).
+                let aad = format!("signing_secrets:{}:{}", row.0, merchant_id);
+                let sec = decrypt_secret(&row.1, &state.config.data_encryption_key, &aad)
                     .map_err(|_| AppError::Internal("Gagal dekripsi signing secret".to_string()))?;
 
                 (merchant_id.clone(), sec)
             }
         };
 
-        // 2. Anti-Replay: Cek dan simpan nonce di DB (SG-10)
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let insert_res = sqlx::query(
-            r#"
-            INSERT INTO request_nonces (credential_id, nonce, seen_at)
-            VALUES (?, ?, ?)
-            "#,
-        )
-        .bind(&credential_id)
-        .bind(nonce)
-        .bind(now_ms)
-        .execute(&state.db)
-        .await;
-
-        if insert_res.is_err() {
-            return Err(AppError::SignatureReplayed);
-        }
-
-        // 3. Hitung Kanonik
-        // canonical = timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path_and_query + "\n" + lower_hex(sha256(raw_body))
+        // SG-04/SG-05/SG-06: kanonik memakai path+query apa adanya.
         let mut hasher = Sha256::new();
         hasher.update(params.raw_body);
         let body_hash_hex = format!("{:x}", hasher.finalize());
@@ -114,11 +94,34 @@ impl SignedRequestValidator {
         mac.update(canonical.as_bytes());
         let expected_sig = format!("v1={:x}", mac.finalize().into_bytes());
 
+        // SG-09: perbandingan constant-time.
         let is_match: bool = expected_sig.as_bytes().ct_eq(signature.as_bytes()).into();
         if !is_match {
             return Err(AppError::SignatureInvalid);
         }
 
-        Ok(())
+        // SG-10/SG-16: nonce disimpan setelah signature terbukti valid, sehingga
+        // request dengan signature salah tidak membakar nonce milik client sah.
+        // Unique constraint (credential_id, nonce) yang menjamin anti-replay.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let insert_res = sqlx::query(
+            r#"
+            INSERT INTO request_nonces (credential_id, nonce, seen_at)
+            VALUES (?, ?, ?)
+            "#,
+        )
+        .bind(&credential_id)
+        .bind(nonce)
+        .bind(now_ms)
+        .execute(&state.db)
+        .await;
+
+        match insert_res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                Err(AppError::SignatureReplayed)
+            }
+            Err(e) => Err(AppError::Internal(e.to_string())),
+        }
     }
 }

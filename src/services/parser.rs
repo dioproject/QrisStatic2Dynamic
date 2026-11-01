@@ -27,6 +27,14 @@ static REGEX_MASK_DIGITS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b\d{8,}\b").expect("Regex mask valid")
 });
 
+/// Masking teks notifikasi sebelum disimpan (RULES §9.1 WH-12, §13 DR-02/DR-03).
+///
+/// Deret digit ≥ 8 (rekening/telepon) diganti `****`. Nominal hasil parse tetap
+/// disimpan terpisah di `parsed_amount`, sehingga masking di sini aman.
+pub fn mask_text(raw_text: &str) -> String {
+    REGEX_MASK_DIGITS.replace_all(raw_text, "****").to_string()
+}
+
 pub fn parse_notification_text(raw_text: &str) -> ParsedNotification {
     let lower = raw_text.to_lowercase();
 
@@ -75,7 +83,7 @@ pub fn parse_notification_text(raw_text: &str) -> ParsedNotification {
     }
 
     // 3. Masking Teks Mentah (RULES.md §13 DR-02 & DR-03)
-    let masked_text = REGEX_MASK_DIGITS.replace_all(raw_text, "****").to_string();
+    let masked_text = mask_text(raw_text);
 
     ParsedNotification {
         amount,

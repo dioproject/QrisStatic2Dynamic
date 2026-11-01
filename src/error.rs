@@ -165,6 +165,31 @@ pub enum AppError {
 
     #[error("TTL transaksi di luar batas yang diizinkan (60..=86400).")]
     TxnTtlInvalid,
+
+    // Callback / Outbound Webhook (RULES.md §14, RL-14/RL-15)
+    #[error("Callback URL tidak valid: wajib HTTPS dengan host yang dapat digunakan.")]
+    CallbackUrlInvalid,
+
+    #[error("Callback URL menunjuk ke jaringan privat atau loopback yang ditolak.")]
+    CallbackUrlPrivate,
+
+    #[error("Notification source tidak ditemukan.")]
+    SourceNotFound,
+
+    #[error("Notification source sudah dicabut (revoked).")]
+    SourceRevoked,
+
+    #[error("Header X-Qris-Event-Id wajib disertakan pada inbound webhook.")]
+    WebhookEventIdRequired,
+
+    #[error("Header X-Qris-Event-Id tidak valid (panjang 1-128 karakter).")]
+    WebhookEventIdInvalid,
+
+    #[error("Body inbound webhook tidak valid atau melebihi batas ukuran.")]
+    WebhookBodyInvalid,
+
+    #[error("Ukuran body request melebihi batas yang diizinkan.")]
+    PayloadTooLarge,
 }
 
 impl AppError {
@@ -216,12 +241,21 @@ impl AppError {
             Self::TxnExpired => "TXN_EXPIRED",
             Self::TxnIdempotencyConflict => "TXN_IDEMPOTENCY_CONFLICT",
             Self::TxnTtlInvalid => "TXN_TTL_INVALID",
+            Self::CallbackUrlInvalid => "CALLBACK_URL_INVALID",
+            Self::CallbackUrlPrivate => "CALLBACK_URL_PRIVATE",
+            Self::SourceNotFound => "SOURCE_NOT_FOUND",
+            Self::SourceRevoked => "WEBHOOK_SOURCE_REVOKED",
+            Self::WebhookEventIdRequired => "WEBHOOK_EVENT_ID_REQUIRED",
+            Self::WebhookEventIdInvalid => "WEBHOOK_EVENT_ID_INVALID",
+            Self::WebhookBodyInvalid => "WEBHOOK_BODY_INVALID",
+            Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
         }
     }
 
     pub fn status_code(&self) -> StatusCode {
         match self {
             Self::QrisImageTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::QrisImageUnsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::TxnAmountCollision
             | Self::UniqueCodePoolExhausted
@@ -241,7 +275,11 @@ impl AppError {
             | Self::SignatureTimestampInvalid
             | Self::SignatureReplayed => StatusCode::UNAUTHORIZED,
             Self::AuthForbidden | Self::MerchantInactive => StatusCode::FORBIDDEN,
-            Self::MerchantNotFound | Self::TxnNotFound => StatusCode::NOT_FOUND,
+            Self::MerchantNotFound | Self::TxnNotFound | Self::SourceNotFound => {
+                StatusCode::NOT_FOUND
+            }
+            Self::SourceRevoked => StatusCode::UNAUTHORIZED,
+            Self::WebhookEventIdRequired => StatusCode::BAD_REQUEST,
             Self::InvariantViolation(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::UNPROCESSABLE_ENTITY,
         }

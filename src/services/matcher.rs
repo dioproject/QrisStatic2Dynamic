@@ -11,6 +11,16 @@ pub struct MatchResult {
     pub reason: &'static str,
 }
 
+#[derive(sqlx::FromRow)]
+struct MatchCandidate {
+    id: String,
+    reference_label: Option<String>,
+    base_amount: i64,
+    fee_amount: i64,
+    unique_code: i64,
+    final_amount: i64,
+}
+
 pub struct MatchEventParams<'a> {
     pub source_id: &'a str,
     pub merchant_id: &'a str,
@@ -118,9 +128,10 @@ impl<'a> MatcherService<'a> {
         let grace_ms = 300_000i64;
 
         // 3. Cari Transaksi Kandidat (MT-01 s/d MT-04)
-        let candidate = sqlx::query_scalar::<_, String>(
+        let candidate = sqlx::query_as::<_, MatchCandidate>(
             r#"
-            SELECT id FROM transactions
+            SELECT id, reference_label, base_amount, fee_amount, unique_code, final_amount
+            FROM transactions
             WHERE merchant_id = ?
               AND status = 'PENDING'
               AND final_amount = ?
@@ -136,7 +147,8 @@ impl<'a> MatcherService<'a> {
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        if let Some(txn_id) = candidate {
+        if let Some(candidate) = candidate {
+            let txn_id = candidate.id.clone();
             // Transisi atomik status transaksi menjadi PAID (MT-05)
             let rows_affected = sqlx::query(
                 r#"
@@ -195,16 +207,21 @@ impl<'a> MatcherService<'a> {
 
                 if let Some(cb_url) = merchant_cb {
                     let dlv_id = format!("dlv_{}", Ulid::new());
-                    let payload_json = serde_json::json!({
-                        "event": "transaction.paid",
-                        "id": dlv_id,
-                        "created_at": chrono::Utc::now().to_rfc3339(),
-                        "data": {
-                            "transaction_id": txn_id,
-                            "amount": amount,
-                            "paid_at": chrono::Utc::now().to_rfc3339()
-                        }
-                    })
+                    // Payload snapshot mengikuti kontrak ERP §9.x (OW-08, OW-10).
+                    let payload_json = crate::services::outbound::build_paid_payload(
+                        crate::services::outbound::PaidPayloadInput {
+                            event_id: &dlv_id,
+                            transaction_id: &txn_id,
+                            merchant_id: params.merchant_id,
+                            reference_label: candidate.reference_label.as_deref(),
+                            base: candidate.base_amount,
+                            fee: candidate.fee_amount,
+                            unique_code: candidate.unique_code,
+                            final_amount: candidate.final_amount,
+                            paid_at_ms: now,
+                            payment_source: Some(params.channel),
+                        },
+                    )
                     .to_string();
 
                     sqlx::query(

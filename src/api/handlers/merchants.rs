@@ -59,6 +59,15 @@ pub async fn create_merchant_handler(
     _master: RequireMaster,
     Json(payload): Json<CreateMerchantPayload>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Callback URL wajib HTTPS publik (RULES §9 RL-14, OW-12).
+    // Divalidasi di boundary HTTP agar config dev dapat mengizinkan localhost.
+    if let Some(cb) = payload.callback_url.as_deref() {
+        crate::services::outbound::validate_callback_url(
+            cb,
+            state.config.allow_insecure_callbacks,
+        )?;
+    }
+
     let service = MerchantService::new(&state.db, &state.config.data_encryption_key);
     let res = service
         .create_merchant(

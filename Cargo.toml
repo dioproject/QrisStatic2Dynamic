@@ -7,12 +7,16 @@ description = "REST API Rust + Axum untuk konversi QRIS statis ke dinamis secara
 
 [dependencies]
 # Web framework
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "tokio"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "set-header"] }
 multer = "3.1"
 futures-util = "0.3"
+tokio-stream = "0.1"
+
+# Outbound HTTP (tanpa redirect mengikuti, RL-15)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

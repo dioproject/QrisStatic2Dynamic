@@ -31,6 +31,7 @@ async fn setup_app() -> (axum::Router, tempfile::TempDir) {
         data_encryption_key: DEK_B64.to_string(),
         require_signed_requests: false,
         allow_public_stateless: false,
+        allow_insecure_callbacks: false,
     };
 
     let state = AppState::new(config, pool);
@@ -139,7 +140,7 @@ async fn test_full_webhook_auto_detect_flow() {
     })
     .to_string();
 
-    let timestamp_str = "1767225600";
+    let timestamp_str = chrono::Utc::now().timestamp().to_string();
     let event_id_str = "notif-uuid-12345";
 
     let mut body_hasher = Sha256::new();

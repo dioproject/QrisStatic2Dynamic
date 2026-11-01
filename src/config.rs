@@ -28,6 +28,11 @@ pub struct AppConfig {
 
     #[serde(default = "default_false")]
     pub allow_public_stateless: bool,
+
+    /// Hanya untuk dev/test: izinkan callback `http://` dan host privat.
+    /// Default produksi WAJIB `false` (ERP §9.x, RULES §9 RL-14).
+    #[serde(default = "default_false")]
+    pub allow_insecure_callbacks: bool,
 }
 
 fn default_env() -> String {
@@ -65,6 +70,10 @@ impl AppConfig {
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
 
+        let allow_insecure_callbacks = std::env::var("ALLOW_INSECURE_CALLBACKS")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
         Ok(Self {
             app_env,
             app_bind,
@@ -75,6 +84,7 @@ impl AppConfig {
             data_encryption_key,
             require_signed_requests,
             allow_public_stateless,
+            allow_insecure_callbacks,
         })
     }
 }

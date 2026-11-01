@@ -27,6 +27,7 @@ async fn setup_app() -> (axum::Router, tempfile::TempDir, AppState) {
         data_encryption_key: DEK_B64.to_string(),
         require_signed_requests: true, // Strict HMAC mode aktif
         allow_public_stateless: false,
+        allow_insecure_callbacks: false,
     };
 
     let state = AppState::new(config, pool);

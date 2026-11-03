@@ -47,6 +47,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "tls-rustls", "migrate", "macros", "derive", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.11"
+dotenvy = "0.15"
 
 [dev-dependencies]
 proptest = "1.6"

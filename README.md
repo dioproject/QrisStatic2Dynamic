@@ -218,6 +218,33 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
+### 📱 Android USB E2E Tester & Notification Forwarder (`android-tester/`)
+
+An ultra-lightweight (~878 KB), zero-bloat native Kotlin Android companion app is included in [`android-tester/`](./android-tester) to validate end-to-end readiness on a real physical phone over USB debugging (`adb reverse`):
+
+- **1-Click Provisioning**: Automatically registers a test Merchant and `ANDROID` Notification Source (`qsk_live_...`, `qss_live_...`, `qws_live_...`).
+- **POS Dynamic QRIS & SSE Stream**: Generates dynamic QRIS transactions with unique codes (`1–999`), renders the QR PNG on screen, and subscribes to real-time Server-Sent Events (`/api/v1/transactions/{id}/stream`).
+- **Real OS Notification Listener (`QrisNotificationService`)**: Captures incoming payment push notifications from GoPay Merchant, DANA Bisnis, banking apps, or built-in simulated notifications and forwards them with canonical HMAC-SHA256 signatures to `/api/v1/webhooks/mutation/{source_id}`.
+- **1-Click Automated Diagnostic Suite**: Runs a 6-stage E2E readiness verification directly from the phone.
+
+#### Quick Start via USB Debugging:
+```bash
+# 1. Start the Rust server locally on port 8080
+cargo run --bin qris-api
+
+# 2. Bridge phone localhost:8080 to PC localhost:8080 over USB cable
+adb reverse tcp:8080 tcp:8080
+
+# 3. Build & install the Android tester APK via USB
+cd android-tester
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# 4. Grant Notification Listener permission & launch the app
+adb shell cmd notification allow_listener id.qris.tester/id.qris.tester.QrisNotificationService
+adb shell am start -n id.qris.tester/.MainActivity
+```
+
 ---
 
 ## 📄 License

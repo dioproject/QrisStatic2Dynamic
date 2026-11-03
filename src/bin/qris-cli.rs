@@ -25,6 +25,7 @@ Database diambil dari variabel lingkungan DATABASE_URL.
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
     qris_api::telemetry::init();
 
     if let Err(err) = run().await {

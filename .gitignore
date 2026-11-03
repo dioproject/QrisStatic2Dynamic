@@ -36,3 +36,11 @@
 *~
 .DS_Store
 Thumbs.db
+
+# Android Tester Build Artifacts
+android-tester/.gradle/
+android-tester/build/
+android-tester/app/build/
+android-tester/local.properties
+*.apk
+

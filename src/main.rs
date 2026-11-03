@@ -6,6 +6,7 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = dotenvy::dotenv();
     telemetry::init();
 
     let config = AppConfig::load_from_env()?;
